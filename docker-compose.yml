@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   web:
-    build: ./app
+    image: storegor/lab2-web:latest
     ports:
       - "8000:5000"
     environment:

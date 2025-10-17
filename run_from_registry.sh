@@ -15,9 +15,6 @@ check_port_available 8000
 echo "Stopping and removing old containers and networks..."
 docker-compose down --volumes --remove-orphans
 
-echo "Building Flask app image..."
-docker-compose build
-
 echo "Starting containers..."
 docker-compose up -d
 
