@@ -47,9 +47,9 @@
 
 **Примеры использования:**
 
-    ```bash
-    ./build_and_push_to_registry.sh my_docker_username my_docker_password
-    ```
+```bash
+./build_and_push_to_registry.sh my_docker_username my_docker_password
+```
 
 ## 3. Проверка работоспособности
 
