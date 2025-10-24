@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  ansible-control:
+    build: 
+      context: .
+      dockerfile: ./dockerfileUbuntuHost
+    container_name: ansible-control
+    ports:
+      - "4444:22"
+    volumes:
+      - ./ansible:/home/admin/ansible
+    working_dir: /home/admin/ansible
+    tty: true
+    stdin_open: true
+    networks:
+      - app-network
+    
+  ubuntu-host1: 
+    build: 
+      context: .
+      dockerfile: ./dockerfileUbuntu
+    container_name: ubuntu-1-ssh-host
+    ports:
+      - "2222:22"
+      - "80:80"
+    networks:
+      - app-network
+    
+  app-container:
+    build:
+      context: .
+      dockerfile: ./dockerfileApp
+    container_name: flask-app
+    ports:
+      - "8081:8000"
+    networks:
+      - app-network
+
+networks:
+  app-network:
