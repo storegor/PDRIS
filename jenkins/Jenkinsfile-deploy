@@ -1,0 +1,184 @@
+pipeline {
+    agent any
+    
+    parameters {
+        string(name: 'ARTIFACT_VERSION', defaultValue: '1.0.1', description: 'Artifact version')
+        string(name: 'GROUP_ID', defaultValue: 'com.lab5', description: 'Group ID')
+        string(name: 'ARTIFACT_ID', defaultValue: 'demo-app', description: 'Artifact ID')
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Target environment')
+    }
+    
+    environment {
+        NEXUS_URL = "http://nexus:8081"
+        NEXUS_REPOSITORY = "maven-releases"
+        NEXUS_CREDENTIALS_ID = "nexus_cred"
+        ANSIBLE_HOST_KEY_CHECKING = "False"
+        ARTIFACT_DIR = "${WORKSPACE}/artifacts"
+        GROUP_PATH = "${params.GROUP_ID}".replace('.', '/')
+    }
+    
+    options {
+        timeout(time: 15, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+        disableConcurrentBuilds()
+    }
+    
+    stages {
+        stage('Prepare Workspace') {
+            steps {
+                sh """
+                    mkdir -p ${ARTIFACT_DIR}
+                    rm -rf ${ARTIFACT_DIR}/*
+                """
+            }
+        }
+        
+        stage('Download from Nexus') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "${NEXUS_CREDENTIALS_ID}",
+                    usernameVariable: 'NEXUS_USER',
+                    passwordVariable: 'NEXUS_PASS'
+                )]) {
+                    script {
+                        def artifactUrl = "${NEXUS_URL}/repository/${NEXUS_REPOSITORY}/${GROUP_PATH}/${params.ARTIFACT_ID}/${params.ARTIFACT_VERSION}/${params.ARTIFACT_ID}-${params.ARTIFACT_VERSION}.jar"
+                        
+                        sh """
+                            curl -u \${NEXUS_USER}:\${NEXUS_PASS} \
+                                -o ${ARTIFACT_DIR}/${params.ARTIFACT_ID}-${params.ARTIFACT_VERSION}.jar \
+                                "${artifactUrl}"
+                            
+                            ls -la ${ARTIFACT_DIR}/
+                        """
+                        
+                        def fileExists = sh(script: "test -s ${ARTIFACT_DIR}/${params.ARTIFACT_ID}-${params.ARTIFACT_VERSION}.jar && echo 'true' || echo 'false'", returnStdout: true).trim()
+                        if (fileExists == 'false') {
+                            error "Failed to download artifact from Nexus"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Git Clone Ansible') {
+            steps {
+                dir('ansible-deploy') {
+                    git branch: 'main', url: 'https://github.com/storegor/lab5-ansible.git'
+                    sh 'ls -la'
+                }
+            }
+        }
+        
+        stage('Prepare Inventory') {
+            steps {
+                script {
+                    def inventoryContent = ""
+                    
+                    switch(params.ENVIRONMENT) {
+                        case 'dev':
+                            inventoryContent = """
+[app_servers]
+dev-server ansible_host=ubuntu-1-ssh-host ansible_user=admin ansible_password=securepassword
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+app_name=${params.ARTIFACT_ID}
+app_version=${params.ARTIFACT_VERSION}
+app_jar_path=${ARTIFACT_DIR}/${params.ARTIFACT_ID}-${params.ARTIFACT_VERSION}.jar
+environment=dev
+"""
+                            break
+                        case 'staging':
+                            inventoryContent = """
+[app_servers]
+staging-server ansible_host=staging-host ansible_user=deploy
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+app_name=${params.ARTIFACT_ID}
+app_version=${params.ARTIFACT_VERSION}
+app_jar_path=${ARTIFACT_DIR}/${params.ARTIFACT_ID}-${params.ARTIFACT_VERSION}.jar
+environment=staging
+"""
+                            break
+                        case 'prod':
+                            inventoryContent = """
+[app_servers]
+prod-server-1 ansible_host=prod-host-1 ansible_user=deploy
+prod-server-2 ansible_host=prod-host-2 ansible_user=deploy
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+app_name=${params.ARTIFACT_ID}
+app_version=${params.ARTIFACT_VERSION}
+app_jar_path=${ARTIFACT_DIR}/${params.ARTIFACT_ID}-${params.ARTIFACT_VERSION}.jar
+environment=prod
+"""
+                            break
+                    }
+                    
+                    writeFile file: 'ansible-deploy/inventory.ini', text: inventoryContent
+                    sh 'cat ansible-deploy/inventory.ini'
+                }
+            }
+        }
+        
+        stage('Run Ansible') {
+            steps {
+                dir('ansible-deploy') {
+                    sh """
+                        ansible-playbook -i inventory.ini playbooks/deploy-app.yml \
+                            -e "artifact_path=${ARTIFACT_DIR}/${params.ARTIFACT_ID}-${params.ARTIFACT_VERSION}.jar" \
+                            -e "app_version=${params.ARTIFACT_VERSION}" \
+                            -e "environment=${params.ENVIRONMENT}" \
+                            -v
+                    """
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    def healthCheckUrl = ""
+                    switch(params.ENVIRONMENT) {
+                        case 'dev':
+                            healthCheckUrl = "http://ubuntu-1-ssh-host:8080/health"
+                            break
+                        case 'staging':
+                            healthCheckUrl = "http://staging-host:8080/health"
+                            break
+                        case 'prod':
+                            healthCheckUrl = "http://prod-host-1:8080/health"
+                            break
+                    }
+                    
+                    sh """
+                        for i in 1 2 3 4 5; do
+                            if curl -s -o /dev/null -w "%{http_code}" "${healthCheckUrl}" | grep -q "200"; then
+                                echo "Application is healthy"
+                                exit 0
+                            fi
+                            sleep 10
+                        done
+                        echo "Health check timeout"
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            archiveArtifacts artifacts: 'ansible-deploy/*.log', allowEmptyArchive: true
+        }
+        success {
+            echo "Deploy completed: ${params.ARTIFACT_ID}:${params.ARTIFACT_VERSION} to ${params.ENVIRONMENT}"
+        }
+        failure {
+            echo "Deploy failed"
+        }
+    }
+}
+

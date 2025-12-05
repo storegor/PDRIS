@@ -1,0 +1,64 @@
+---
+- name: Deploy Java Application
+  hosts: app_servers
+  become: yes
+  
+  vars:
+    app_name: "demo-app"
+    app_user: "appuser"
+    app_group: "appgroup"
+    app_home: "/opt/app"
+    app_bin_dir: "{{ app_home }}/bin"
+    app_log_dir: "{{ app_home }}/logs"
+    
+  tasks:
+    - name: Install Java 17
+      apt:
+        name: openjdk-17-jdk
+        state: present
+        update_cache: yes
+      when: ansible_os_family == 'Debian'
+
+    - name: Create application group
+      group:
+        name: "{{ app_group }}"
+        state: present
+
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        group: "{{ app_group }}"
+        home: "{{ app_home }}"
+        shell: /bin/bash
+        create_home: yes
+
+    - name: Create directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+      loop:
+        - "{{ app_home }}"
+        - "{{ app_bin_dir }}"
+        - "{{ app_log_dir }}"
+
+    - name: Copy artifact to server
+      copy:
+        src: "{{ artifact_path }}"
+        dest: "{{ app_bin_dir }}/{{ app_name }}.jar"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0644'
+      when: artifact_path is defined
+
+    - name: Verify deployment
+      stat:
+        path: "{{ app_bin_dir }}/{{ app_name }}.jar"
+      register: deployed_jar
+
+    - name: Show result
+      debug:
+        msg: "SUCCESS! Application deployed to {{ app_bin_dir }}/{{ app_name }}.jar (size: {{ deployed_jar.stat.size }} bytes)"
+      when: deployed_jar.stat.exists

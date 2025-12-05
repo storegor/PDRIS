@@ -1,0 +1,24 @@
+FROM jenkins/jenkins:lts-jdk17
+
+USER root
+
+RUN apt-get update && apt-get install -y ansible sshpass && rm -rf /var/lib/apt/lists/*
+
+USER jenkins
+
+RUN jenkins-plugin-cli --plugins \
+    workflow-aggregator \
+    git \
+    pipeline-stage-view \
+    blueocean \
+    allure-jenkins-plugin \
+    nexus-artifact-uploader \
+    sonar \
+    ws-cleanup \
+    timestamper \
+    junit
+
+ENV JAVA_OPTS="-Djenkins.install.runSetupWizard=false"
+
+COPY --chown=jenkins:jenkins init.groovy.d/ /usr/share/jenkins/ref/init.groovy.d/
+
