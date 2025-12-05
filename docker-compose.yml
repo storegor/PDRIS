@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  jenkins:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.jenkins
+    container_name: jenkins
+    privileged: true
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cicd-network
+    restart: unless-stopped
+    depends_on:
+      - nexus
+      - sonarqube
+
+  nexus:
+    image: sonatype/nexus3:latest
+    container_name: nexus
+    ports:
+      - "8081:8081"
+    volumes:
+      - nexus_data:/nexus-data
+    environment:
+      - INSTALL4J_ADD_VM_PARAMS=-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=1024m -Dnexus.security.randompassword=false
+    networks:
+      - cicd-network
+    restart: unless-stopped
+
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: sonarqube
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    networks:
+      - cicd-network
+    restart: unless-stopped
+
+  ubuntu-target:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.ubuntu-target
+    container_name: ubuntu-1-ssh-host
+    ports:
+      - "2222:22"
+      - "8090:8080"
+    networks:
+      - cicd-network
+    restart: unless-stopped
+
+  allure:
+    image: frankescobar/allure-docker-service:latest
+    container_name: allure
+    ports:
+      - "5050:5050"
+    environment:
+      - CHECK_RESULTS_EVERY_SECONDS=3
+    networks:
+      - cicd-network
+    restart: unless-stopped
+
+networks:
+  cicd-network:
+    driver: bridge
+
+volumes:
+  jenkins_home:
+  nexus_data:
+  sonarqube_data:
+  sonarqube_extensions:

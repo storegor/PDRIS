@@ -1,0 +1,145 @@
+pipeline {
+    agent any
+    
+    tools {
+        jdk 'jdk17'
+        maven 'maven3'
+    }
+    
+    environment {
+        JAVA_HOME = tool('jdk17')
+        PATH = "${JAVA_HOME}/bin:${tool('maven3')}/bin:${env.PATH}"
+        NEXUS_URL = "http://nexus:8081"
+        NEXUS_REPOSITORY = "maven-releases"
+        NEXUS_CREDENTIALS_ID = "nexus_cred"
+        SONAR_HOST_URL = "http://sonarqube:9000"
+        GROUP_ID = "com.lab5"
+        ARTIFACT_ID = "demo-app"
+        VERSION = "1.0.${BUILD_NUMBER}"
+    }
+    
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+    
+    stages {
+        stage('Environment Check') {
+            steps {
+                sh """
+                    echo "Java version:"
+                    java -version
+                    echo "Maven version:"
+                    mvn -version
+                    echo "JAVA_HOME: ${JAVA_HOME}"
+                """
+            }
+        }
+        
+        stage('Git Clone') {
+            steps {
+                cleanWs()
+                git branch: 'main', url: 'https://github.com/storegor/lab5-app.git'
+                sh 'ls -la'
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh 'mvn clean compile -DskipTests'
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                sh 'mvn test'
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+                }
+            }
+        }
+        
+        stage('Generate Allure Report') {
+            steps {
+                sh 'mvn allure:report'
+            }
+            post {
+                always {
+                    allure includeProperties: false,
+                           jdk: 'jdk17',
+                           results: [[path: 'target/allure-results']]
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=${ARTIFACT_ID} \
+                            -Dsonar.projectName='${ARTIFACT_ID}' \
+                            -Dsonar.projectVersion=${VERSION} \
+                            -Dsonar.host.url=${SONAR_HOST_URL}
+                    """
+                }
+            }
+        }
+        
+        stage('Package') {
+            steps {
+                sh 'mvn package -DskipTests'
+                sh 'ls -la target/*.jar'
+            }
+        }
+        
+        stage('Deploy to Nexus') {
+            steps {
+                script {
+                    def jarFile = sh(script: "ls target/*.jar | grep -v original | head -1", returnStdout: true).trim()
+                    
+                    nexusArtifactUploader(
+                        nexusVersion: 'nexus3',
+                        protocol: 'http',
+                        nexusUrl: 'nexus:8081',
+                        groupId: "${GROUP_ID}",
+                        version: "${VERSION}",
+                        repository: "${NEXUS_REPOSITORY}",
+                        credentialsId: "${NEXUS_CREDENTIALS_ID}",
+                        artifacts: [
+                            [artifactId: "${ARTIFACT_ID}", classifier: '', file: jarFile, type: 'jar'],
+                            [artifactId: "${ARTIFACT_ID}", classifier: '', file: 'pom.xml', type: 'pom']
+                        ]
+                    )
+                }
+            }
+        }
+        
+        stage('Trigger Deploy Job') {
+            steps {
+                build job: 'deploy-pipeline', 
+                      parameters: [
+                          string(name: 'ARTIFACT_VERSION', value: "${VERSION}"),
+                          string(name: 'GROUP_ID', value: "${GROUP_ID}"),
+                          string(name: 'ARTIFACT_ID', value: "${ARTIFACT_ID}")
+                      ],
+                      wait: false
+            }
+        }
+    }
+    
+    post {
+        always {
+            archiveArtifacts artifacts: 'target/*.jar', allowEmptyArchive: true, fingerprint: true
+        }
+        success {
+            echo "Build completed successfully"
+        }
+        failure {
+            echo "Build failed"
+        }
+    }
+}
